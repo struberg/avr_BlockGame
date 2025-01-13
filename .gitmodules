@@ -1,0 +1,3 @@
+[submodule "src/avr_common"]
+	path = src/avr_common
+	url = git@github.com:struberg/avr_common.git

@@ -1,0 +1,13 @@
+obj
+.vscode
+.history
+*.elf
+*.hex
+*.o
+*.obj
+*.lst
+*.map
+*.eep
+*.lss
+*.sym
+.dep
