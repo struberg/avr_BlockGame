@@ -7,6 +7,8 @@
  * 
  * @copyright Copyright (c) 2024 Mark Struberg
  * @license Apache License v2.0
+ * 
+ * 
  */
 
 #define F_CPU 10000000UL
@@ -33,12 +35,23 @@ volatile uint8_t taskTriggered = 0;
 
 /** DISPLAY START  **/
 
-#define DISPLAY_BUFFER_LEN (4*8)
-uint8_t displayBuffer[DISPLAY_BUFFER_LEN]; 
+#define MAX7219_MODULE_COUNT 4
+
+
+// maps directly to the display ram
 FrameBuffer frameBuffer;
+uint8_t frameBufferMem[MAX7219_MODULE_COUNT*8]; 
+
+// bigger than the frameBuffer, allows for scrolling
+FrameBuffer backBuffer;
+uint8_t backBufferMem[(MAX7219_MODULE_COUNT+1)*8]; 
 
 /** DISPLAY END  **/
 
+
+/** BUTTONS START **/
+
+/** BUTTONS END **/
 
 void setup_cpu(void) {
     // auf prescaler /2 stellen
@@ -89,11 +102,17 @@ ISR (TCB0_INT_vect) {
 
 
 void setup_anzeige(void) {
-    frameBuffer.width=32;
-    frameBuffer.widthBytes = 4;
+    frameBuffer.widthBytes = MAX7219_MODULE_COUNT;
+    frameBuffer.width=frameBuffer.widthBytes*8;
     frameBuffer.heigth=8;
-    frameBuffer.buffer=displayBuffer;
-    frameBuffer.bufferLen = DISPLAY_BUFFER_LEN;
+    frameBuffer.buffer=frameBufferMem;
+    frameBuffer.bufferLen = sizeof(frameBufferMem);
+
+    backBuffer.widthBytes = MAX7219_MODULE_COUNT+1;
+    backBuffer.width=backBuffer.widthBytes*8;
+    backBuffer.heigth=8;
+    backBuffer.buffer=backBufferMem;
+    backBuffer.bufferLen =  sizeof(backBufferMem);
 }
 
 static uint16_t counter = 0;
@@ -114,44 +133,88 @@ int drawNextChar(FrameBuffer* pFrameBuffer, char character, uint8_t startXPos, T
     if (pPreviousChar != NULL && pPreviousChar->size != 0) {
         if (fontp_collide(pPreviousChar, &currentChar)) {
             // draw an empty line between the 2 font characters and increase the x pos
-            framebuffer_vline(&frameBuffer, startXPos++, 0, 7, false);
+            SET_LED
+            framebuffer_vline(pFrameBuffer, startXPos++, 0, 7, false);
+            CLR_LED
         }
     }
 
     tile_place(pFrameBuffer, startXPos, 0, &currentChar);
     startXPos += tile_getWidth(&currentChar);
-    *pPreviousChar = currentChar;
+
+    if (startXPos < backBuffer.width) {
+        *pPreviousChar = currentChar;
+    }
+
     return startXPos; 
 }
 
-char* message = "  Tag! Hallo Strubi! ";
+char* message = "*****  This is a scrolling text!  *****";
 uint8_t msgPos = 0;
 Tile previousChar = {0,};
+
+// 0..7 used for shifting the bitmap.
+// Once we shifted a whole byte (8 pixel == one matrix), 
+// we continue to draw the next missing characters 
+uint8_t shiftPos = 0;
+uint8_t lastStartXPos = 0;
 
 void task_anzeige(void) {
     if (taskTriggered & TASK_LED_bm) {
         // only once per timer interrupt
         taskTriggered &= ~TASK_LED_bm;
         counter++;
-        uint8_t charPos = msgPos;
-        if (counter == 1500) {
+        if (counter == 150) {
             counter = 0;
-            SET_LED
-            uint8_t startXPos = 0;
-            do {
-                if (message[charPos] == 0) {
-                    charPos = 0;
-                }
-                startXPos = drawNextChar(&frameBuffer, message[charPos++], startXPos, &previousChar);
-            } while(startXPos < frameBuffer.width);
-            
-            msgPos++;
-            if (message[msgPos] == 0) {
-                msgPos = 0;
+            if (shiftPos == 0) {
+                // we shifted out 8 pixels, now we need to draw again
+                uint8_t startXPos = lastStartXPos;
+                do {
+                    lastStartXPos = startXPos;
+                    startXPos = drawNextChar(&backBuffer, message[msgPos], startXPos, &previousChar);
+
+                    if (startXPos < backBuffer.width) {
+                        // otherwise we have to draw that character again next time
+                        msgPos++;
+                    }
+
+                    if (message[msgPos] == 0) {
+                        msgPos = 0;
+                    }
+                } while (startXPos < backBuffer.width);
+
+                lastStartXPos -= 8; // we will shift this out
             }
+
+            // are we in shift mode?
+            for (uint8_t row = 0; row < 8; row++) {
+                uint8_t rowStart = row*backBuffer.widthBytes;
+                for (int col=0; col < backBuffer.widthBytes; col++) {
+                    backBuffer.buffer[rowStart+col] <<= 1;
+                    if (col < backBuffer.widthBytes-1) {
+                        // for all but the last byte we have to carry over the MSB from the next byte
+                        backBuffer.buffer[rowStart+col] |= (backBuffer.buffer[rowStart+col+1] >> 7);
+                    }
+                }
+            }
+
+            shiftPos++;
+            if (shiftPos == 8) {
+                shiftPos = 0;
+            }
+
+            // now copy the backBuffer to the frameBuffer
+            for (uint8_t row = 0; row < 8; row++) {
+                uint8_t fbRowStart = row*frameBuffer.widthBytes;
+                uint8_t bbRowStart = row*backBuffer.widthBytes;
+                for (int col=0; col < frameBuffer.widthBytes; col++) {
+                    frameBuffer.buffer[fbRowStart+col] = backBuffer.buffer[bbRowStart+col];
+                }
+            }
+            
+
             max7219_renderData(&frameBuffer, 4);
             pos++;
-            CLR_LED
         }
     }
 }
