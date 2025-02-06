@@ -82,7 +82,7 @@ OBJDIR = obj
 # List C source files here. (C dependencies are automatically generated.)
 SRC = $(TARGET).c avr_common/strub_common.c avr_common/max7219.c \
 	avr_common/gfx/font_proportional.c avr_common/gfx/tile_8x8.c \
-	avr_common/gfx/frameBuffer.c
+	avr_common/gfx/frameBuffer.c avr_common/button.c
 
 
 # List C++ source files here. (C dependencies are automatically generated.)

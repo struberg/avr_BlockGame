@@ -24,16 +24,42 @@
 #include "avr_common/max7219.h"
 #include "avr_common/gfx/font_proportional.h"
 #include "avr_common/gfx/tile_8x8.h"
+#include "avr_common/button.h"
 
 
 #define TASK_LED_bm 0x01
+#define TASK_BUTTON_bm 0x02
 
 #define SET_LED PORTB.OUTSET = PIN3_bm;
 #define CLR_LED PORTB.OUTCLR = PIN3_bm;
 
+
+/* BUTTONS START */
+#define BUTTON_LEFT_PORT VPORTA
+#define BUTTON_LEFT_PIN PIN5_bm
+#define BUTTON_LEFT_PINCTRL PORTA.PIN5CTRL
+#define BUTTON_LEFT_PRESSED 0x01
+
+#define BUTTON_RIGHT_PORT VPORTA
+#define BUTTON_RIGHT_PIN PIN4_bm
+#define BUTTON_RIGHT_PINCTRL PORTA.PIN4CTRL
+#define BUTTON_RIGHT_PRESSED 0x02
+
+#define BUTTON_UP_PORT VPORTA
+#define BUTTON_UP_PIN PIN6_bm
+#define BUTTON_UP_PINCTRL PORTA.PIN6CTRL
+#define BUTTON_UP_PRESSED 0x04
+
+#define BUTTON_DOWN_PORT VPORTA
+#define BUTTON_DOWN_PIN PIN7_bm
+#define BUTTON_DOWN_PINCTRL PORTA.PIN7CTRL
+#define BUTTON_DOWN_PRESSED 0x08
+/* BUTTONS END */
+
+
 volatile uint8_t taskTriggered = 0; 
 
-/** DISPLAY START  **/
+/* DISPLAY START  */
 
 #define MAX7219_MODULE_COUNT 4
 
@@ -46,12 +72,9 @@ uint8_t frameBufferMem[MAX7219_MODULE_COUNT*8];
 FrameBuffer backBuffer;
 uint8_t backBufferMem[(MAX7219_MODULE_COUNT+1)*8]; 
 
-/** DISPLAY END  **/
+/* DISPLAY END  */
 
 
-/** BUTTONS START **/
-
-/** BUTTONS END **/
 
 void setup_cpu(void) {
     // auf prescaler /2 stellen
@@ -159,68 +182,157 @@ Tile previousChar = {0,};
 uint8_t shiftPos = 0;
 uint8_t lastStartXPos = 0;
 
+void do_laufschrift(void) {
+    counter++;
+    if (counter == 150) {
+        counter = 0;
+        if (shiftPos == 0) {
+            // we shifted out 8 pixels, now we need to draw again
+            uint8_t startXPos = lastStartXPos;
+            do {
+                lastStartXPos = startXPos;
+                startXPos = drawNextChar(&backBuffer, message[msgPos], startXPos, &previousChar);
+
+                if (startXPos < backBuffer.width) {
+                    // otherwise we have to draw that character again next time
+                    msgPos++;
+                }
+
+                if (message[msgPos] == 0) {
+                    msgPos = 0;
+                }
+            } while (startXPos < backBuffer.width);
+
+            lastStartXPos -= 8; // we will shift this out
+        }
+
+        // are we in shift mode?
+        for (uint8_t row = 0; row < 8; row++) {
+            uint8_t rowStart = row*backBuffer.widthBytes;
+            for (int col=0; col < backBuffer.widthBytes; col++) {
+                backBuffer.buffer[rowStart+col] <<= 1;
+                if (col < backBuffer.widthBytes-1) {
+                    // for all but the last byte we have to carry over the MSB from the next byte
+                    backBuffer.buffer[rowStart+col] |= (backBuffer.buffer[rowStart+col+1] >> 7);
+                }
+            }
+        }
+
+        shiftPos++;
+        if (shiftPos == 8) {
+            shiftPos = 0;
+        }
+
+        // now copy the backBuffer to the frameBuffer
+        for (uint8_t row = 0; row < 8; row++) {
+            uint8_t fbRowStart = row*frameBuffer.widthBytes;
+            uint8_t bbRowStart = row*backBuffer.widthBytes;
+            for (int col=0; col < frameBuffer.widthBytes; col++) {
+                frameBuffer.buffer[fbRowStart+col] = backBuffer.buffer[bbRowStart+col];
+            }
+        }
+        
+
+        max7219_renderData(&frameBuffer, 4);
+        pos++;
+    }
+
+} 
+
+/**
+ * @brief modus for the display
+ * 0: show scrolling text
+ * 1: edit scrolling text
+ * 2: tetris
+ * 
+ */
+uint8_t modus = 0;
+
 void task_anzeige(void) {
     if (taskTriggered & TASK_LED_bm) {
         // only once per timer interrupt
         taskTriggered &= ~TASK_LED_bm;
-        counter++;
-        if (counter == 150) {
-            counter = 0;
-            if (shiftPos == 0) {
-                // we shifted out 8 pixels, now we need to draw again
-                uint8_t startXPos = lastStartXPos;
-                do {
-                    lastStartXPos = startXPos;
-                    startXPos = drawNextChar(&backBuffer, message[msgPos], startXPos, &previousChar);
 
-                    if (startXPos < backBuffer.width) {
-                        // otherwise we have to draw that character again next time
-                        msgPos++;
-                    }
-
-                    if (message[msgPos] == 0) {
-                        msgPos = 0;
-                    }
-                } while (startXPos < backBuffer.width);
-
-                lastStartXPos -= 8; // we will shift this out
-            }
-
-            // are we in shift mode?
-            for (uint8_t row = 0; row < 8; row++) {
-                uint8_t rowStart = row*backBuffer.widthBytes;
-                for (int col=0; col < backBuffer.widthBytes; col++) {
-                    backBuffer.buffer[rowStart+col] <<= 1;
-                    if (col < backBuffer.widthBytes-1) {
-                        // for all but the last byte we have to carry over the MSB from the next byte
-                        backBuffer.buffer[rowStart+col] |= (backBuffer.buffer[rowStart+col+1] >> 7);
-                    }
-                }
-            }
-
-            shiftPos++;
-            if (shiftPos == 8) {
-                shiftPos = 0;
-            }
-
-            // now copy the backBuffer to the frameBuffer
-            for (uint8_t row = 0; row < 8; row++) {
-                uint8_t fbRowStart = row*frameBuffer.widthBytes;
-                uint8_t bbRowStart = row*backBuffer.widthBytes;
-                for (int col=0; col < frameBuffer.widthBytes; col++) {
-                    frameBuffer.buffer[fbRowStart+col] = backBuffer.buffer[bbRowStart+col];
-                }
-            }
-            
-
-            max7219_renderData(&frameBuffer, 4);
-            pos++;
+        switch (modus) {
+            case 0:
+                do_laufschrift();
+                break;
         }
-    }
+     }
 }
 
 void setup_led(void) {
     PORTB.DIRSET = PIN3_bm;
+}
+
+void print(char* pText) {
+    uint8_t startX = 0;
+    Tile prevChar={0,};
+    for (uint8_t i = 0; pText[i] != 0; i++) {
+        startX = drawNextChar(&backBuffer, pText[i], startX, &prevChar);
+    }
+}
+
+/**
+ * @brief This function will get called whenever a button got pressed
+ * 
+ * @param buttons 
+ */
+void buttonPressed(uint8_t buttons) {
+    switch (buttons) {
+        SET_LED
+        case BUTTON_LEFT_PRESSED:
+            print("Left Button");
+            break;
+        case BUTTON_RIGHT_PRESSED:
+            print("Right Button");
+            break;
+        case BUTTON_UP_PRESSED:
+            print("Up Button");
+            break;
+        case BUTTON_DOWN_PRESSED:
+            print("Down Button");
+            break;
+    }
+}
+
+void setup_buttons(void (*callback)(uint8_t)) {
+    // input switches
+    BUTTON_LEFT_PORT.DIR  &= ~BUTTON_LEFT_PIN;
+    BUTTON_RIGHT_PORT.DIR &= ~BUTTON_RIGHT_PIN;
+    BUTTON_UP_PORT.DIR    &= ~BUTTON_UP_PIN;
+    BUTTON_DOWN_PORT.DIR  &= ~BUTTON_DOWN_PIN;
+
+
+    // sadly enabling pullup is not available via bitmask
+    BUTTON_LEFT_PINCTRL   = PORT_PULLUPEN_bm;
+    BUTTON_RIGHT_PINCTRL = PORT_PULLUPEN_bm;
+    BUTTON_UP_PINCTRL = PORT_PULLUPEN_bm;
+    BUTTON_DOWN_PINCTRL = PORT_PULLUPEN_bm;
+    setButtonCallback(callback, 0x08);
+}
+
+void task_buttons(void) {
+    if (taskTriggered & TASK_BUTTON_bm) {
+        // only once per timer interrupt
+        taskTriggered &= ~TASK_BUTTON_bm;
+
+        uint8_t currentButtons = 0;
+        if (!(BUTTON_LEFT_PORT.IN & BUTTON_LEFT_PIN)) {
+            currentButtons |= BUTTON_LEFT_PRESSED;
+        }
+        if (!(BUTTON_RIGHT_PORT.IN & BUTTON_RIGHT_PIN)) {
+            currentButtons |= BUTTON_RIGHT_PRESSED;
+        }
+        if (!(BUTTON_UP_PORT.IN & BUTTON_UP_PIN)) {
+            currentButtons |= BUTTON_UP_PRESSED;
+        }
+        if (!(BUTTON_DOWN_PORT.IN & BUTTON_DOWN_PIN)) {
+            currentButtons |= BUTTON_DOWN_PRESSED;
+        }
+
+        buttonsCheck(currentButtons);
+    }
 }
 
 int main(void) {
@@ -229,6 +341,8 @@ int main(void) {
 
     setup_led();
     setup_anzeige();
+
+    setup_buttons((* buttonPressed));
 
     max7219_init(4);
     
@@ -242,6 +356,7 @@ int main(void) {
     
     while(1) {
         task_anzeige();
+        task_buttons();
     }
 
     return 1;
