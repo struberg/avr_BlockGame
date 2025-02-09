@@ -14,18 +14,7 @@
 #define F_CPU 10000000UL
 
 
-#include <avr/io.h>
-#include <util/delay.h>
-#include <avr/interrupt.h>
-#include <stdbool.h>
-#include <stddef.h>
-
-#include "avr_common/strub_common.h"
-#include "avr_common/max7219.h"
-#include "avr_common/gfx/font_proportional.h"
-#include "avr_common/gfx/tile_8x8.h"
-#include "avr_common/button.h"
-
+#include "main.h"
 
 #define TASK_LED_bm 0x01
 #define TASK_BUTTON_bm 0x02
@@ -34,46 +23,36 @@
 #define CLR_LED PORTB.OUTCLR = PIN3_bm;
 
 
-/* BUTTONS START */
-#define BUTTON_LEFT_PORT VPORTA
-#define BUTTON_LEFT_PIN PIN5_bm
-#define BUTTON_LEFT_PINCTRL PORTA.PIN5CTRL
-#define BUTTON_LEFT_PRESSED 0x01
 
-#define BUTTON_RIGHT_PORT VPORTA
-#define BUTTON_RIGHT_PIN PIN4_bm
-#define BUTTON_RIGHT_PINCTRL PORTA.PIN4CTRL
-#define BUTTON_RIGHT_PRESSED 0x02
-
-#define BUTTON_UP_PORT VPORTA
-#define BUTTON_UP_PIN PIN6_bm
-#define BUTTON_UP_PINCTRL PORTA.PIN6CTRL
-#define BUTTON_UP_PRESSED 0x04
-
-#define BUTTON_DOWN_PORT VPORTA
-#define BUTTON_DOWN_PIN PIN7_bm
-#define BUTTON_DOWN_PINCTRL PORTA.PIN7CTRL
-#define BUTTON_DOWN_PRESSED 0x08
-/* BUTTONS END */
-
-
+/** Flags for the multitasking */
 volatile uint8_t taskTriggered = 0; 
-
-/* DISPLAY START  */
-
-#define MAX7219_MODULE_COUNT 4
 
 
 // maps directly to the display ram
 FrameBuffer frameBuffer;
 uint8_t frameBufferMem[MAX7219_MODULE_COUNT*8]; 
 
+
 // bigger than the frameBuffer, allows for scrolling
 FrameBuffer backBuffer;
 uint8_t backBufferMem[(MAX7219_MODULE_COUNT+1)*8]; 
 
-/* DISPLAY END  */
 
+
+/* Menu mode START */
+
+/**
+ * @brief modus for the display
+ * 0: show scrolling text
+ * 1: edit scrolling text
+ * 2: tetris
+ * 
+ */
+#define SCREEN_MODE_SCROLL 0
+#define SCREEN_MODE_TETRIS 1
+uint8_t screenMode = SCREEN_MODE_SCROLL;
+
+/* Menu mode END */
 
 
 void setup_cpu(void) {
@@ -162,7 +141,7 @@ int drawNextChar(FrameBuffer* pFrameBuffer, char character, uint8_t startXPos, T
         }
     }
 
-    tile_place(pFrameBuffer, startXPos, 0, &currentChar);
+    tile_place(pFrameBuffer, startXPos, 0, &currentChar, true);
     startXPos += tile_getWidth(&currentChar);
 
     if (startXPos < backBuffer.width) {
@@ -172,7 +151,7 @@ int drawNextChar(FrameBuffer* pFrameBuffer, char character, uint8_t startXPos, T
     return startXPos; 
 }
 
-char* message = "*****  This is a scrolling text!  *****";
+char* message = "**  Press the 'Down' button to start the falling block game!  **";
 uint8_t msgPos = 0;
 Tile previousChar = {0,};
 
@@ -231,31 +210,25 @@ void do_laufschrift(void) {
                 frameBuffer.buffer[fbRowStart+col] = backBuffer.buffer[bbRowStart+col];
             }
         }
-        
 
-        max7219_renderData(&frameBuffer, 4);
+        max7219_renderData(&frameBuffer);
         pos++;
     }
 
 } 
 
-/**
- * @brief modus for the display
- * 0: show scrolling text
- * 1: edit scrolling text
- * 2: tetris
- * 
- */
-uint8_t modus = 0;
 
 void task_anzeige(void) {
     if (taskTriggered & TASK_LED_bm) {
         // only once per timer interrupt
         taskTriggered &= ~TASK_LED_bm;
 
-        switch (modus) {
+        switch (screenMode) {
             case 0:
                 do_laufschrift();
+                break;
+            case 1:
+                task_BlockGame();
                 break;
         }
      }
@@ -279,19 +252,23 @@ void print(char* pText) {
  * @param buttons 
  */
 void buttonPressed(uint8_t buttons) {
+    if (screenMode == SCREEN_MODE_TETRIS) {
+        buttonPressed_BlockGame(buttons);
+        return;
+    }
+ 
     switch (buttons) {
-        SET_LED
         case BUTTON_LEFT_PRESSED:
-            print("Left Button");
             break;
         case BUTTON_RIGHT_PRESSED:
-            print("Right Button");
             break;
         case BUTTON_UP_PRESSED:
-            print("Up Button");
             break;
         case BUTTON_DOWN_PRESSED:
-            print("Down Button");
+            if (screenMode == SCREEN_MODE_SCROLL) {
+                startBlockGame();
+                screenMode = SCREEN_MODE_TETRIS;
+            }
             break;
     }
 }
@@ -345,7 +322,7 @@ int main(void) {
     setup_buttons((* buttonPressed));
 
     max7219_init(4);
-    
+
     sei();
 
     max7219_startDataFrame();
